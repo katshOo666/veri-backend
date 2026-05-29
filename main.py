@@ -25,7 +25,7 @@ async def analyze(request: Request):
         api_user = os.getenv('API_USER')
         api_secret = os.getenv('API_SECRET')
 
-        # Используем одну, самую стандартную модель
+        # Пробуем универсальную модель для Free Trial
         params = {
             'url': image_url,
             'models': 'gen-ai', 
@@ -36,16 +36,16 @@ async def analyze(request: Request):
         response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
         data = response.json()
 
+        # Если первая модель не сработала, пробуем вторую (альтернативную)
         if data.get('status') == 'failure':
-            # Если 'gen-ai' не работает, пробуем 'ai-generated' (запасной вариант)
             params['models'] = 'ai-generated'
             response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
             data = response.json()
 
         if data.get('status') == 'failure':
-            return {"error": True, "message": "Модель ИИ еще не активирована в Sightengine"}
+            return {"error": True, "message": f"Sightengine error: {data.get('error', {}).get('message')}"}
 
-        # Проверяем разные варианты ответа от сервера
+        # Ищем процент ИИ в разных ветках ответа
         ai_score = 0
         if 'type' in data:
             ai_score = data['type'].get('ai_generated', 0)
@@ -61,4 +61,4 @@ async def analyze(request: Request):
         }
         
     except Exception as e:
-        return {"error": True, "message": str(e)}
+        return {"error": True, "message": f"Server error: {str(e)}"}
