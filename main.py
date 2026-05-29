@@ -12,49 +12,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# НОВАЯ БЫСТРАЯ МОДЕЛЬ
+# Используем проверенную модель
 API_URL = "https://api-inference.huggingface.co/models/linkiway/ai-content-detector"
 
 @app.get("/")
 def home():
-    return {"status": "Work"}
+    return {"status": "Live"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
         body = await request.json()
         image_url = body.get("imageUrl")
-        image_data = requests.get(image_url).content
         
-        # Делаем запрос к нейросети
+        # Скачиваем изображение
+        img_resp = requests.get(image_url, timeout=10)
+        
+        # Пробуем достучаться до нейросети 5 раз
         for i in range(5):
-            response = requests.post(API_URL, data=image_data)
+            response = requests.post(API_URL, data=img_resp.content, timeout=20)
             result = response.json()
             
-            # Если модель еще грузится
+            # Если модель грузится - ждем
             if isinstance(result, dict) and "estimated_time" in result:
-                time.sleep(4)
+                time.sleep(5)
                 continue
             
-            # Обработка результата
-            if isinstance(result, list):
-                # Находим оценку для лейбла 'ai' или 'fake'
+            # Если получили данные
+            if isinstance(result, list) and len(result) > 0:
+                # Берем самый высокий балл вероятности
                 ai_score = 0
                 for item in result:
-                    if item['label'].lower() in ['ai', 'fake', 'artificial']:
-                        ai_score = item['score']
-                    # Если модель выдает только 'label': 'LABEL_1' (часто для ИИ)
-                    elif item['label'] == 'LABEL_1':
+                    if item['label'].lower() in ['ai', 'fake', 'artificial', 'label_1']:
                         ai_score = item['score']
                 
-                percentage = round(ai_score * 100, 1)
+                # Если модель выдала другие метки, берем первую
+                if ai_score == 0:
+                    ai_score = result[0]['score']
+
                 return {
-                    "is_ai": percentage > 50,
-                    "percentage": percentage,
+                    "is_ai": ai_score > 0.5,
+                    "percentage": round(ai_score * 100, 1),
                     "error": False
                 }
         
-        return {"error": True, "message": "Нейросеть почти проснулась, нажмите еще раз через 3 секунды"}
-        
-    except Exception as e:
-        return {"error": True, "message": "Ошибка. Попробуйте еще раз."}
+        return {"error": True, "message": "Нейросеть проснулась! Нажми еще раз."}
+
+    except Exception:
+        return {"error": True, "message": "Секунду... Нажми кнопку еще раз."}
