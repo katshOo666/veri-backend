@@ -22,37 +22,35 @@ async def analyze(request: Request):
         body = await request.json()
         image_url = body.get("imageUrl")
         
+        # Берем ключи
         api_user = os.getenv('API_USER')
         api_secret = os.getenv('API_SECRET')
 
-        # Список моделей от самой новой к старым
-        models = ['gen-ai', 'ai-generated', 'artificial']
+        # Запрашиваем сразу все модели, которые отвечают за ИИ
+        # Одна из них ТОЧНО должна сработать
+        params = {
+            'url': image_url,
+            'models': 'gen-ai,ai-generated', 
+            'api_user': api_user,
+            'api_secret': api_secret
+        }
         
-        data = None
-        for model_name in models:
-            params = {
-                'url': image_url,
-                'models': model_name,
-                'api_user': api_user,
-                'api_secret': api_secret
-            }
-            response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-            temp_data = response.json()
-            
-            # Если нашли рабочую модель — останавливаемся
-            if temp_data.get('status') == 'success':
-                data = temp_data
-                break
-        
-        if not data:
-            return {"error": True, "message": "Не удалось подобрать модель ИИ. Проверьте тариф Sightengine."}
+        response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
+        data = response.json()
 
-        # Извлекаем результат
+        # Если Sightengine ругается на ключи или доступ
+        if data.get('status') == 'failure':
+            return {"error": True, "message": f"Ошибка Sightengine: {data.get('error', {}).get('message')}"}
+
+        # Вытаскиваем любой намек на ИИ из ответа
         ai_score = 0
-        if 'type' in data:
-            ai_score = data['type'].get('ai_generated', 0)
+        
+        # Проверяем структуру gen-ai
+        if 'type' in data and 'ai_generated' in data['type']:
+            ai_score = data['type']['ai_generated']
+        # Проверяем структуру ai-generated
         elif 'ai_generated' in data:
-            ai_score = data.get('ai_generated', 0)
+            ai_score = data['ai_generated']
             
         percentage = round(ai_score * 100, 2)
         
@@ -63,4 +61,4 @@ async def analyze(request: Request):
         }
         
     except Exception as e:
-        return {"error": True, "message": str(e)}
+        return {"error": True, "message": f"Ошибка сервера: {str(e)}"}
