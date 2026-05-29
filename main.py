@@ -25,37 +25,33 @@ async def analyze(request: Request):
         api_user = os.getenv('API_USER')
         api_secret = os.getenv('API_SECRET')
 
-        # Список возможных названий моделей (от новых к старым)
-        models_to_try = ['gen-ai', 'ai-generated', 'artificial']
+        # Используем одну, самую стандартную модель
+        params = {
+            'url': image_url,
+            'models': 'gen-ai', 
+            'api_user': api_user,
+            'api_secret': api_secret
+        }
         
-        data = {}
-        last_error = ""
-
-        # Пробуем каждую модель, пока не получим ответ
-        for model in models_to_try:
-            params = {
-                'url': image_url,
-                'models': model,
-                'api_user': api_user,
-                'api_secret': api_secret
-            }
-            response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-            data = response.json()
-            
-            # Если модель подошла и ошибки нет — выходим из цикла
-            if data.get('status') == 'success':
-                break
-            else:
-                last_error = data.get('error', {}).get('message', 'Unknown error')
+        response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
+        data = response.json()
 
         if data.get('status') == 'failure':
-            return {"error": True, "message": f"Sightengine error: {last_error}"}
+            # Если 'gen-ai' не работает, пробуем 'ai-generated' (запасной вариант)
+            params['models'] = 'ai-generated'
+            response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
+            data = response.json()
 
-        # Вытаскиваем результат (логика для разных моделей может чуть отличаться)
-        # Проверяем все возможные места, где может лежать процент ИИ
-        type_data = data.get('type', {})
-        ai_score = type_data.get('ai_generated') or data.get('ai_generated') or 0
-        
+        if data.get('status') == 'failure':
+            return {"error": True, "message": "Модель ИИ еще не активирована в Sightengine"}
+
+        # Проверяем разные варианты ответа от сервера
+        ai_score = 0
+        if 'type' in data:
+            ai_score = data['type'].get('ai_generated', 0)
+        elif 'ai_generated' in data:
+            ai_score = data.get('ai_generated', 0)
+            
         percentage = round(ai_score * 100, 2)
         
         return {
@@ -65,4 +61,4 @@ async def analyze(request: Request):
         }
         
     except Exception as e:
-        return {"error": True, "message": f"Server error: {str(e)}"}
+        return {"error": True, "message": str(e)}
