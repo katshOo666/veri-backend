@@ -1,57 +1,115 @@
-// Вставьте этот код в Wix Velo (на страницу с загрузчиком)
-import {fetch} from 'wix-fetch';
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import time
+import base64
+import re
+from urllib.parse import urlparse
 
-// ID ваших элементов
-const imageUploader = $w("#yourImageUploader");
-const resultText = $w("#yourResultText");
-const analyzeButton = $w("#yourButton");
+app = FastAPI()
 
-// Ваш сервер (замените на реальный URL)
-const SERVER_URL = "http://localhost:8000/analyze";
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-analyzeButton.onClick(async () => {
-    const uploadedImage = imageUploader.value;
-    
-    if (!uploadedImage) {
-        resultText.text = "Сначала загрузите изображение";
-        return;
-    }
-    
-    resultText.text = "🔍 Анализируем...";
-    
-    try {
-        // Получаем файл и конвертируем в base64
-        const imageUrl = uploadedImage[0].url;
-        const response = await fetch(imageUrl);
-        const blob = await response.blob();
+# ЗАМЕНИТЕ ЭТОТ ТОКЕН НА ВАШ ТОКЕН С https://huggingface.co/settings/tokens
+HUGGINGFACE_TOKEN = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
+HEADERS = {"Authorization": f"Bearer {HUGGINGFACE_TOKEN}"}
+
+@app.get("/")
+def home():
+    return {"status": "OK", "message": "AI Image Detector работает"}
+
+@app.post("/analyze")
+async def analyze(request: Request):
+    try:
+        body = await request.json()
         
-        const reader = new FileReader();
+        # Получаем изображение (либо URL, либо base64)
+        image_url = body.get("imageUrl", "")
+        image_base64 = body.get("imageBase64", "")
         
-        const result = await new Promise((resolve) => {
-            reader.onloadend = async function() {
-                const base64Image = reader.result;
+        img_data = None
+        
+        # Если прислали base64
+        if image_base64:
+            if "," in image_base64:
+                image_base64 = image_base64.split(",")[1]
+            img_data = base64.b64decode(image_base64)
+        
+        # Если прислали URL
+        elif image_url:
+            # Обработка Wix ссылок
+            final_url = image_url
+            
+            if "wix:image" in image_url:
+                match = re.search(r'wix:image://v1/([^/?#]+)', image_url)
+                if match:
+                    final_url = f"https://static.wixstatic.com/media/{match.group(1)}"
+                else:
+                    match = re.search(r'wix:image://([^/?#]+)', image_url)
+                    if match:
+                        final_url = f"https://static.wixstatic.com/media/{match.group(1)}"
+            
+            # Скачиваем изображение
+            response = requests.get(final_url, timeout=15, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            response.raise_for_status()
+            img_data = response.content
+        
+        if not img_data:
+            return {"error": True, "message": "Не удалось получить изображение"}
+        
+        # Отправляем в Hugging Face
+        for attempt in range(3):
+            try:
+                response = requests.post(API_URL, headers=HEADERS, data=img_data, timeout=30)
                 
-                const apiResponse = await fetch(SERVER_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ imageBase64: base64Image })
-                });
+                if response.status_code == 503:
+                    time.sleep(5)
+                    continue
                 
-                resolve(await apiResponse.json());
-            };
-            reader.readAsDataURL(blob);
-        });
+                if response.status_code == 200:
+                    result = response.json()
+                    
+                    if isinstance(result, list) and len(result) > 0:
+                        ai_score = 0
+                        for item in result:
+                            label = item.get('label', '').lower()
+                            score = item.get('score', 0)
+                            if label in ['artificial', 'ai', 'fake', 'AI']:
+                                ai_score = score
+                                break
+                            elif label in ['real', 'human']:
+                                ai_score = 1 - score
+                                break
+                        
+                        if ai_score == 0:
+                            ai_score = result[0].get('score', 0)
+                        
+                        return {
+                            "is_ai": ai_score > 0.5,
+                            "percentage": round(ai_score * 100, 1),
+                            "confidence": round(ai_score, 3),
+                            "error": False
+                        }
+                
+                return {"error": True, "message": f"Ошибка API: {response.status_code}"}
+                
+            except:
+                if attempt == 2:
+                    return {"error": True, "message": "Модель не отвечает. Попробуйте позже."}
+                continue
         
-        if (result.error) {
-            resultText.text = `❌ ${result.message}`;
-        } else if (result.is_ai) {
-            resultText.text = `🤖 Это AI изображение (${result.percentage}% уверенности)`;
-        } else {
-            resultText.text = `📸 Это реальное изображение (${result.percentage}% уверенности)`;
-        }
-        
-    } catch (error) {
-        resultText.text = "❌ Ошибка при анализе";
-        console.error(error);
-    }
-});
+    except Exception as e:
+        return {"error": True, "message": f"Ошибка: {str(e)}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
