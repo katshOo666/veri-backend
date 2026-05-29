@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
+import re
 
 app = FastAPI()
 
@@ -13,6 +14,7 @@ app.add_middleware(
 )
 
 API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
+HEADERS = {"Authorization": "Bearer YOUR_HUGGINGFACE_TOKEN"}  # Замените на ваш токен
 
 @app.get("/")
 def home():
@@ -24,35 +26,126 @@ async def analyze(request: Request):
         body = await request.json()
         raw_url = body.get("imageUrl", "")
         
-        # --- МАГИЯ ВОССТАНОВЛЕНИЯ ССЫЛКИ ---
+        if not raw_url:
+            return {"error": True, "message": "URL изображения не предоставлен"}
+        
+        # --- ИСПРАВЛЕННАЯ МАГИЯ ВОССТАНОВЛЕНИЯ ССЫЛКИ ---
+        final_url = None
+        
+        # Обработка Wix ссылок
         if "wix:image" in raw_url:
-            # Если это внутренняя ссылка Wix
-            img_id = raw_url.split('/')[3]
-            if '#' in img_id: img_id = img_id.split('#')[0]
-            final_url = f"https://static.wixstatic.com/media/{img_id}"
-        elif raw_url.startswith("https") and "//" not in raw_url:
-            # Если пришло "https:..." без слешей (редкий глюк Wix)
-            final_url = raw_url.replace("https:", "https://")
-        else:
+            # Извлекаем ID изображения
+            match = re.search(r'wix:image://v1/([^/?#]+)', raw_url)
+            if match:
+                img_id = match.group(1)
+                final_url = f"https://static.wixstatic.com/media/{img_id}"
+        elif "static.wixstatic.com" in raw_url:
             final_url = raw_url
-
-        # Проверяем, что ссылка вообще похожа на правду
-        if len(final_url) < 10:
-            return {"error": True, "message": "Картинка не загрузилась. Попробуй еще раз."}
-
-        img_data = requests.get(final_url, timeout=10).content
+        elif raw_url.startswith("https://") or raw_url.startswith("http://"):
+            final_url = raw_url
+        else:
+            # Если ссылка кривая, пробуем её исправить
+            if raw_url.startswith("https:") and "//" not in raw_url:
+                final_url = raw_url.replace("https:", "https://")
+            else:
+                final_url = raw_url
         
-        # Попытки пробуждения нейросети
-        for i in range(4):
-            response = requests.post(API_URL, data=img_data)
-            result = response.json()
-            if isinstance(result, dict) and "estimated_time" in result:
-                time.sleep(5)
+        # Проверяем, что ссылка валидна
+        if not final_url or len(final_url) < 10:
+            return {"error": True, "message": "Не удалось получить ссылку на изображение"}
+        
+        # Скачиваем изображение
+        try:
+            img_response = requests.get(final_url, timeout=15, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            img_response.raise_for_status()
+            img_data = img_response.content
+        except requests.exceptions.RequestException as e:
+            return {"error": True, "message": f"Не удалось загрузить изображение: {str(e)}"}
+        
+        # Отправляем в Hugging Face с авторизацией
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                response = requests.post(
+                    API_URL, 
+                    headers=HEADERS,  # Добавляем заголовки авторизации
+                    data=img_data,
+                    timeout=30
+                )
+                
+                # Проверяем статус ответа
+                if response.status_code == 503:
+                    result = response.json()
+                    if "estimated_time" in result:
+                        wait_time = min(result.get("estimated_time", 5), 10)
+                        time.sleep(wait_time)
+                        continue
+                
+                elif response.status_code == 200:
+                    result = response.json()
+                    
+                    # Обрабатываем ответ
+                    if isinstance(result, list) and len(result) > 0:
+                        # Ищем метку AI/real
+                        ai_score = 0
+                        for item in result:
+                            label = item.get('label', '').lower()
+                            score = item.get('score', 0)
+                            
+                            # В зависимости от модели могут быть разные названия меток
+                            if label in ['artificial', 'ai', 'fake', 'label_1', 'AI']:
+                                ai_score = score
+                                break
+                            elif label in ['real', 'human', 'label_0']:
+                                ai_score = 1 - score
+                                break
+                            else:
+                                # Если метки нестандартные, используем первую
+                                ai_score = score if 'artificial' in label else 1 - score
+                        
+                        is_ai = ai_score > 0.5
+                        percentage = round(ai_score * 100, 1)
+                        
+                        return {
+                            "is_ai": is_ai,
+                            "percentage": percentage,
+                            "confidence": ai_score,
+                            "error": False
+                        }
+                    else:
+                        return {"error": True, "message": "Неожиданный формат ответа от модели"}
+                
+                else:
+                    # Другие ошибки
+                    return {
+                        "error": True, 
+                        "message": f"Ошибка API: {response.status_code}"
+                    }
+                    
+            except requests.exceptions.Timeout:
+                if attempt == max_attempts - 1:
+                    return {"error": True, "message": "Превышено время ожидания ответа от модели"}
                 continue
-            if isinstance(result, list):
-                ai_score = next((item['score'] for item in result if item['label'].lower() in ['artificial', 'ai', 'fake', 'label_1']), 0)
-                return {"is_ai": ai_score > 0.5, "percentage": round(ai_score * 100, 1), "error": False}
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    return {"error": True, "message": f"Ошибка при анализе: {str(e)}"}
+                continue
         
-        return {"error": True, "message": "Нейросеть просыпается... Жми кнопку!"}
+        return {"error": True, "message": "Модель не отвечает. Попробуйте позже"}
+        
     except Exception as e:
-        return {"error": True, "message": "Жми кнопку еще раз!"}
+        return {"error": True, "message": f"Ошибка сервера: {str(e)}"}
+
+# Добавляем endpoint для проверки статуса модели
+@app.get("/model-status")
+async def model_status():
+    try:
+        response = requests.get(API_URL, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return {"status": "ready", "message": "Модель готова к работе"}
+        else:
+            return {"status": "loading", "message": "Модель загружается"}
+    except:
+        return {"status": "error", "message": "Не удалось проверить статус модели"}
