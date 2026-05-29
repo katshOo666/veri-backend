@@ -12,12 +12,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Используем очень быструю и стабильную модель
+# Модель для детекции
 API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
 
 @app.get("/")
 def home():
-    return {"status": "Ready to work!"}
+    return {"status": "Veri is Live and Ready"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
@@ -26,17 +26,18 @@ async def analyze(request: Request):
         image_url = body.get("imageUrl")
         image_data = requests.get(image_url).content
         
-        # Пытаемся спросить нейросеть до 3 раз, если она спит
-        for i in range(3):
+        # Делаем 5 попыток достучаться до нейросети
+        for i in range(5):
             response = requests.post(API_URL, data=image_data)
             result = response.json()
             
-            # Если нейросеть загружается, ждем 5 секунд и пробуем снова
+            # Если модель загружается, она вернет 'estimated_time'
             if isinstance(result, dict) and "estimated_time" in result:
-                time.sleep(5)
+                wait_time = result.get("estimated_time", 10)
+                time.sleep(min(wait_time, 15)) # Ждем, но не больше 15 сек за раз
                 continue
             
-            # Если получили результат
+            # Если получили результат в виде списка
             if isinstance(result, list):
                 ai_score = 0
                 for item in result:
@@ -49,8 +50,13 @@ async def analyze(request: Request):
                     "percentage": percentage,
                     "error": False
                 }
-        
-        return {"error": True, "message": "Нейросеть просыпается, нажмите кнопку еще раз через 5 секунд"}
+            
+            # Если ошибка в формате словаря
+            if isinstance(result, dict) and "error" in result:
+                time.sleep(5)
+                continue
+
+        return {"error": True, "message": "Нейросеть просыпается. Подождите 10 секунд и нажмите кнопку еще раз."}
         
     except Exception as e:
-        return {"error": True, "message": "Сервер перегружен, попробуйте снова"}
+        return {"error": True, "message": "Попробуйте еще раз через пару секунд."}
