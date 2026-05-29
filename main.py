@@ -1,38 +1,33 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-import requests
-import time
+import { fetch } from 'wix-fetch';
 
-app = FastAPI()
+export async function button_click(event) {
+    const imageUrl = $w("#imageField").src; // Убедись, что ID верный!
+    const backendUrl = "https://veri-backend-d0dj.onrender.com/analyze";
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    $w("#resultText").text = "Анализирую...";
 
-# Модель для проверки
-API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
+    try {
+        const response = await fetch(backendUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ "imageUrl": imageUrl })
+        });
 
-# ЭТОТ БЛОК ИСПРАВИТ ОШИБКУ "NOT FOUND"
-@app.get("/")
-def home():
-    return {"status": "Server is Running"}
+        const data = await response.json();
 
-@app.post("/analyze")
-async def analyze(request: Request):
-    try:
-        body = await request.json()
-        image_url = body.get("imageUrl")
-        img_data = requests.get(image_url).content
-        
-        # Делаем 3 попытки, если нейросеть грузится
-        for i in range(3):
-            response = requests.post(API_URL, data=img_data)
-            result = response.json()
-            
-            if isinstance(result, dict) and "estimated_time" in result:
+        if (data.error) {
+            $w("#resultText").text = data.message;
+        } else {
+            // Вот тут магия!
+            $w("#resultText").text = "Вероятность ИИ: " + data.percentage + "%";
+        }
+
+    } catch (error) {
+        $w("#resultText").text = "Ошибка соединения с сервером";
+    }
+}
                 time.sleep(5)
                 continue
             
