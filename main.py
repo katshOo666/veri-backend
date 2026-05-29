@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import os
 
 app = FastAPI()
 
@@ -12,9 +11,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Ссылка на бесплатную модель детекции ИИ на Hugging Face
+API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
+
 @app.get("/")
 def home():
-    return {"status": "Veri is Live"}
+    return {"status": "Veri is Live via HuggingFace"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
@@ -22,36 +24,20 @@ async def analyze(request: Request):
         body = await request.json()
         image_url = body.get("imageUrl")
         
-        api_user = os.getenv('API_USER')
-        api_secret = os.getenv('API_SECRET')
-
-        # Используем стандартную модель модерации, которая часто включает ИИ-детекцию
-        params = {
-            'url': image_url,
-            'models': 'gen-ai', 
-            'api_user': api_user,
-            'api_secret': api_secret
-        }
+        # Скачиваем картинку, чтобы отправить её в нейросеть
+        image_data = requests.get(image_url).content
         
-        response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-        data = response.json()
+        # Запрос к нейросети
+        response = requests.post(API_URL, data=image_data)
+        result = response.json()
 
-        # Если Sightengine говорит, что модель неизвестна, попробуем общую модель
-        if data.get('status') == 'failure' and 'Unknown model' in data.get('error', {}).get('message', ''):
-            params['models'] = 'general'
-            response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-            data = response.json()
-
-        if data.get('status') == 'failure':
-            return {"error": True, "message": f"Sightengine: {data['error']['message']}"}
-
-        # Ищем процент ИИ
+        # Парсим результат (ищем вероятность 'ai')
+        # Обычно приходит список: [{'label': 'artificial', 'score': 0.99}, ...]
         ai_score = 0
-        if 'type' in data:
-            ai_score = data['type'].get('ai_generated', 0)
-        elif 'ai_generated' in data:
-            ai_score = data.get('ai_generated', 0)
-            
+        for item in result:
+            if item['label'] in ['artificial', 'ai', 'fake']:
+                ai_score = item['score']
+        
         percentage = round(ai_score * 100, 2)
         
         return {
@@ -61,4 +47,4 @@ async def analyze(request: Request):
         }
         
     except Exception as e:
-        return {"error": True, "message": f"Ошибка: {str(e)}"}
+        return {"error": True, "message": "Нейросеть занята, попробуйте еще раз через 10 секунд"}
