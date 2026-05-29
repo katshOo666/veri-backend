@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 # ЗАМЕНИТЕ ЭТОТ ТОКЕН
-HUGGINGFACE_TOKEN = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+HUGGINGFACE_TOKEN = "wa4ykGt9ezK2MUZuTCURcfL2wDjYXpi8"
 
 # НОВЫЙ РАБОЧИЙ URL (исправлено!)
 API_URL = "https://router.huggingface.co/hf-inference/models/umm-maybe/AI-image-detector"
