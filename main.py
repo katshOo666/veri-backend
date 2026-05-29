@@ -1,15 +1,17 @@
 import os
+import re
+import time
+import requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import requests
-import base64
-import re
 from dotenv import load_dotenv
 
+# Загружаем ключи из переменных окружения (настрой их в Render)
 load_dotenv()
 
 app = FastAPI()
 
+# Разрешаем Wix делать запросы к нашему серверу
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,72 +19,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- КОНФИГУРАЦИЯ SIGHTENGINE ----
-# Замени 'ВАШ_USER' и 'ВАШ_SECRET' на данные из панели Sightengine, 
-# если не используешь переменные окружения в Render
-SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER", "ВАШ_USER")
-SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET", "ВАШ_SECRET")
-SIGHTENGINE_API_URL = "https://api.sightengine.com/1.0/check.json"
+# Данные Sightengine (обязательно добавь их в Render Settings -> Environment Variables)
+SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER")
+SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET")
+API_URL = "https://api.sightengine.com/1.0/check.json"
 
 @app.get("/")
 def home():
-    return {"status": "OK", "message": "Sightengine Detector is Live"}
+    return {"status": "Live", "service": "Sightengine AI Detector"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
         body = await request.json()
-        image_url = body.get("imageUrl", "")
-        image_base64 = body.get("imageBase64", "")
+        raw_url = body.get("imageUrl", "")
 
+        if not raw_url:
+            return {"error": True, "message": "Ссылка на картинку пуста"}
+
+        # --- ТРАНСФОРМАЦИЯ ССЫЛКИ WIX ---
+        # Wix присылает: wix:image://v1/660415_...jpg/file.jpg#originWidth=...
+        # Нам нужно: https://static.wixstatic.com/media/660415_...jpg
+        final_url = raw_url
+        if "wix:image" in raw_url:
+            # Ищем ID файла (обычно это часть между v1/ и следующим /)
+            match = re.search(r'v1/([^/]+)', raw_url)
+            if match:
+                img_id = match.group(1)
+                final_url = f"https://static.wixstatic.com/media/{img_id}"
+
+        # --- ЗАПРОС В SIGHTENGINE ---
         params = {
             'models': 'genai',
             'api_user': SIGHTENGINE_USER,
             'api_secret': SIGHTENGINE_SECRET,
+            'url': final_url
         }
 
-        # СЛУЧАЙ 1: Отправка через Base64 (если Wix передает строку)
-        if image_base64:
-            if "," in image_base64:
-                image_base64 = image_base64.split(",")[1]
-            img_bytes = base64.b64decode(image_base64)
-            
-            # ИСПРАВЛЕНО: Правильный формат отправки файлов в requests
-            files = {'media': ('image.jpg', img_bytes, 'image/jpeg')}
-            response = requests.post(SIGHTENGINE_API_URL, params=params, files=files)
+        response = requests.get(API_URL, params=params)
+        data = response.json()
 
-        # СЛУЧАЙ 2: Отправка через URL (включая ссылки Wix)
-        elif image_url:
-            final_url = image_url
-            if "wix:image" in image_url:
-                # Улучшенная регулярка для извлечения ID медиа из Wix
-                match = re.search(r'v1/(.*?)/', image_url)
-                if not match: match = re.search(r'wix:image://v1/(.*?)#', image_url)
-                
-                if match:
-                    img_id = match.group(1)
-                    final_url = f"https://static.wixstatic.com/media/{img_id}"
-            
-            params['url'] = final_url
-            response = requests.get(SIGHTENGINE_API_URL, params=params)
-        
-        else:
-            return {"error": True, "message": "Нет данных изображения"}
+        # Проверка ответа от API
+        if data.get('status') == 'failure':
+            return {"error": True, "message": data.get('error', {}).get('message', 'Ошибка API')}
 
-        # Обработка ответа
-        result = response.json()
-        
-        if result.get('status') == 'failure':
-            return {"error": True, "message": result.get('error', {}).get('message')}
-
-        # Получаем вероятность AI
-        ai_prob = result.get('genai', {}).get('prob', 0)
+        # Получаем вероятность AI (значение от 0 до 1)
+        ai_prob = data.get('genai', {}).get('prob', 0)
         
         return {
             "is_ai": ai_prob > 0.5,
             "percentage": round(ai_prob * 100, 1),
-            "error": False,
-            "confidence": ai_prob
+            "error": False
         }
 
     except Exception as e:
