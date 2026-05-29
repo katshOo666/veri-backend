@@ -5,7 +5,6 @@ import os
 
 app = FastAPI()
 
-# Разрешаем Wix обращаться к серверу
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,50 +14,55 @@ app.add_middleware(
 
 @app.get("/")
 def home():
-    return {"status": "Veri is Live and Ready"}
+    return {"status": "Veri is Live"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
-        # Получаем данные от Wix
         body = await request.json()
         image_url = body.get("imageUrl")
         
-        if not image_url:
-            return {"error": True, "message": "No image URL provided"}
-
-        # Ключи из настроек Render (Environment)
         api_user = os.getenv('API_USER')
         api_secret = os.getenv('API_SECRET')
-        
-        # Запрос к Sightengine с правильной моделью
-        # Мы используем 'gen-ai', так как она самая точная сейчас
-        params = {
-            'url': image_url,
-            'models': 'gen-ai', 
-            'api_user': api_user,
-            'api_secret': api_secret
-        }
-        
-        response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-        data = response.json()
 
-        # Если Sightengine вернул ошибку
+        # Список возможных названий моделей (от новых к старым)
+        models_to_try = ['gen-ai', 'ai-generated', 'artificial']
+        
+        data = {}
+        last_error = ""
+
+        # Пробуем каждую модель, пока не получим ответ
+        for model in models_to_try:
+            params = {
+                'url': image_url,
+                'models': model,
+                'api_user': api_user,
+                'api_secret': api_secret
+            }
+            response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
+            data = response.json()
+            
+            # Если модель подошла и ошибки нет — выходим из цикла
+            if data.get('status') == 'success':
+                break
+            else:
+                last_error = data.get('error', {}).get('message', 'Unknown error')
+
         if data.get('status') == 'failure':
-            return {"error": True, "message": data['error']['message']}
+            return {"error": True, "message": f"Sightengine error: {last_error}"}
 
-        # Достаем вероятность того, что это ИИ
-        # В модели gen-ai структура ответа именно такая:
-        ai_score = data.get('type', {}).get('ai_generated', 0)
+        # Вытаскиваем результат (логика для разных моделей может чуть отличаться)
+        # Проверяем все возможные места, где может лежать процент ИИ
+        type_data = data.get('type', {})
+        ai_score = type_data.get('ai_generated') or data.get('ai_generated') or 0
         
-        # Переводим в проценты (от 0 до 100)
         percentage = round(ai_score * 100, 2)
         
         return {
-            "is_ai": percentage > 50, # Если больше 50%, считаем что это ИИ
+            "is_ai": percentage > 50,
             "percentage": percentage,
             "error": False
         }
         
     except Exception as e:
-        return {"error": True, "message": f"Python Error: {str(e)}"}
+        return {"error": True, "message": f"Server error: {str(e)}"}
