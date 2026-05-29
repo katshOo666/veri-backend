@@ -1,40 +1,56 @@
-import { fetch } from 'wix-fetch';
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import requests
+import time
 
-export async function button_click(event) {
-    const imageUrl = $w("#imageField").src; // Убедись, что ID верный!
-    const backendUrl = "https://veri-backend-d0dj.onrender.com/analyze";
+app = FastAPI()
 
-    $w("#resultText").text = "Анализирую...";
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    try {
-        const response = await fetch(backendUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ "imageUrl": imageUrl })
-        });
+API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
 
-        const data = await response.json();
+@app.get("/")
+def home():
+    return {"status": "Server is Live"}
 
-        if (data.error) {
-            $w("#resultText").text = data.message;
-        } else {
-            // Вот тут магия!
-            $w("#resultText").text = "Вероятность ИИ: " + data.percentage + "%";
-        }
-
-    } catch (error) {
-        $w("#resultText").text = "Ошибка соединения с сервером";
-    }
-}
+@app.post("/analyze")
+async def analyze(request: Request):
+    try:
+        body = await request.json()
+        image_url = body.get("imageUrl")
+        
+        # --- ТА САМАЯ МАГИЯ ДЛЯ WIX ---
+        # Превращаем внутреннюю ссылку Wix во внешнюю публичную
+        if image_url and image_url.startswith("wix:image://v1/"):
+            img_id = image_url.split('/')[3]
+            image_url = f"https://static.wixstatic.com/media/{img_id}"
+        # ------------------------------
+        
+        img_data = requests.get(image_url).content
+        
+        for i in range(3):
+            response = requests.post(API_URL, data=img_data)
+            result = response.json()
+            
+            if isinstance(result, dict) and "estimated_time" in result:
                 time.sleep(5)
                 continue
             
             if isinstance(result, list):
-                ai_score = next((item['score'] for item in result if item['label'].lower() in ['artificial', 'ai', 'fake']), 0)
-                return {"is_ai": ai_score > 0.5, "percentage": round(ai_score * 100, 2), "error": False}
+                ai_score = next((item['score'] for item in result if item.get('label', '').lower() in ['artificial', 'ai', 'fake']), 0)
+                return {
+                    "is_ai": ai_score > 0.5,
+                    "percentage": round(ai_score * 100, 1),
+                    "error": False
+                }
         
-        return {"error": True, "message": "Нейросеть просыпается, нажми еще раз через 5 сек"}
+        return {"error": True, "message": "Нейросеть просыпается... Нажми еще раз!"}
+    except Exception as e:
+        return {"error": True, "message": "Нажми кнопку еще раз!"}
     except:
         return {"error": True, "message": "Нажми кнопку еще раз"}
