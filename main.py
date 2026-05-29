@@ -25,27 +25,29 @@ async def analyze(request: Request):
         api_user = os.getenv('API_USER')
         api_secret = os.getenv('API_SECRET')
 
-        # Пробуем универсальную модель для Free Trial
-        params = {
-            'url': image_url,
-            'models': 'gen-ai', 
-            'api_user': api_user,
-            'api_secret': api_secret
-        }
+        # Список моделей от самой новой к старым
+        models = ['gen-ai', 'ai-generated', 'artificial']
         
-        response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-        data = response.json()
-
-        # Если первая модель не сработала, пробуем вторую (альтернативную)
-        if data.get('status') == 'failure':
-            params['models'] = 'ai-generated'
+        data = None
+        for model_name in models:
+            params = {
+                'url': image_url,
+                'models': model_name,
+                'api_user': api_user,
+                'api_secret': api_secret
+            }
             response = requests.get('https://api.sightengine.com/1.0/check.json', params=params)
-            data = response.json()
+            temp_data = response.json()
+            
+            # Если нашли рабочую модель — останавливаемся
+            if temp_data.get('status') == 'success':
+                data = temp_data
+                break
+        
+        if not data:
+            return {"error": True, "message": "Не удалось подобрать модель ИИ. Проверьте тариф Sightengine."}
 
-        if data.get('status') == 'failure':
-            return {"error": True, "message": f"Sightengine error: {data.get('error', {}).get('message')}"}
-
-        # Ищем процент ИИ в разных ветках ответа
+        # Извлекаем результат
         ai_score = 0
         if 'type' in data:
             ai_score = data['type'].get('ai_generated', 0)
@@ -61,4 +63,4 @@ async def analyze(request: Request):
         }
         
     except Exception as e:
-        return {"error": True, "message": f"Server error: {str(e)}"}
+        return {"error": True, "message": str(e)}
