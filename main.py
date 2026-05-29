@@ -21,8 +21,8 @@ def home():
 async def analyze(image: UploadFile = File(...)):
     # Получаем ключи из настроек Render (Environment Variables)
     # Если ты их еще не вставила в Render, можно временно вписать их вместо os.getenv
-    api_user = os.getenv('API_USER', 'твой_id_здесь')
-    api_secret = os.getenv('API_SECRET', 'твой_секрет_здесь')
+    api_user = os.getenv('API_USER')
+    api_secret = os.getenv('API_SECRET')
     
     file_bytes = await image.read()
     
