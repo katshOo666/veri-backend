@@ -14,8 +14,8 @@ app.add_middleware(
 )
 
 # Берем ключи из переменных Render
-SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER")
-SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET")
+SIGHTENGINE_USER = os.getenv("145435152")
+SIGHTENGINE_SECRET = os.getenv("wa4ykGt9ezK2MUZuTCURcfL2wDjYXpi8")
 
 @app.post("/analyze")
 async def analyze(request: Request):
