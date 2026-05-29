@@ -16,51 +16,43 @@ API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detect
 
 @app.get("/")
 def home():
-    return {"status": "Work"}
+    return {"status": "OK"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
         body = await request.json()
-        image_url = body.get("imageUrl")
+        raw_url = body.get("imageUrl", "")
         
-        # Улучшенная магия для Wix-ссылок
-        if "wix:image" in image_url:
-            # Извлекаем ID картинки точнее
-            parts = image_url.split('/')
-            img_id = [p for p in parts if '.' in p or '_' in p][0]
+        # --- МАГИЯ ВОССТАНОВЛЕНИЯ ССЫЛКИ ---
+        if "wix:image" in raw_url:
+            # Если это внутренняя ссылка Wix
+            img_id = raw_url.split('/')[3]
             if '#' in img_id: img_id = img_id.split('#')[0]
-            image_url = f"https://static.wixstatic.com/media/{img_id}"
-        
-        # Качаем картинку
-        img_resp = requests.get(image_url, timeout=10)
-        if img_resp.status_code != 200:
-            return {"error": True, "message": "Не удалось загрузить фото из Wix"}
+            final_url = f"https://static.wixstatic.com/media/{img_id}"
+        elif raw_url.startswith("https") and "//" not in raw_url:
+            # Если пришло "https:..." без слешей (редкий глюк Wix)
+            final_url = raw_url.replace("https:", "https://")
+        else:
+            final_url = raw_url
 
-        # Пробуем нейросеть
-        for i in range(5):
-            response = requests.post(API_URL, data=img_resp.content, timeout=15)
-            data = response.json()
-            
-            if isinstance(data, dict) and "estimated_time" in data:
-                time.sleep(4)
+        # Проверяем, что ссылка вообще похожа на правду
+        if len(final_url) < 10:
+            return {"error": True, "message": "Картинка не загрузилась. Попробуй еще раз."}
+
+        img_data = requests.get(final_url, timeout=10).content
+        
+        # Попытки пробуждения нейросети
+        for i in range(4):
+            response = requests.post(API_URL, data=img_data)
+            result = response.json()
+            if isinstance(result, dict) and "estimated_time" in result:
+                time.sleep(5)
                 continue
-            
-            if isinstance(data, list):
-                # Ищем вероятность ИИ (label_1 или artificial/ai)
-                ai_score = 0
-                for item in data:
-                    label = item.get('label', '').lower()
-                    if label in ['artificial', 'ai', 'fake', 'label_1']:
-                        ai_score = item.get('score', 0)
-                
-                return {
-                    "is_ai": ai_score > 0.5,
-                    "percentage": round(ai_score * 100, 1),
-                    "error": False
-                }
+            if isinstance(result, list):
+                ai_score = next((item['score'] for item in result if item['label'].lower() in ['artificial', 'ai', 'fake', 'label_1']), 0)
+                return {"is_ai": ai_score > 0.5, "percentage": round(ai_score * 100, 1), "error": False}
         
-        return {"error": True, "message": "Нейросеть спит. Нажми еще раз!"}
-
+        return {"error": True, "message": "Нейросеть просыпается... Жми кнопку!"}
     except Exception as e:
-        return {"error": True, "message": f"Ошибка: {str(e)[:20]}..."}
+        return {"error": True, "message": "Жми кнопку еще раз!"}
