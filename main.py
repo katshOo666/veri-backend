@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+import time
 
 app = FastAPI()
 
@@ -11,34 +12,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Модель для проверки
+API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
+
+# ЭТОТ БЛОК ИСПРАВИТ ОШИБКУ "NOT FOUND"
+@app.get("/")
+def home():
+    return {"status": "Server is Running"}
+
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
         body = await request.json()
         image_url = body.get("imageUrl")
-        
-        # Используем самую базовую и быструю модель
-        api_url = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
         img_data = requests.get(image_url).content
         
-        response = requests.post(api_url, data=img_data)
-        data = response.json()
-
-        # Если нейросеть прислала ошибку или еще грузится
-        if isinstance(data, dict) and ("error" in data or "detail" in data):
-            return {"error": True, "message": "Нейросеть просыпается... Нажми еще раз через 5 сек"}
-
-        # Ищем результат
-        ai_score = 0
-        if isinstance(data, list) and len(data) > 0:
-            for item in data:
-                if item.get('label', '').lower() in ['artificial', 'ai', 'fake', 'label_1']:
-                    ai_score = item.get('score', 0)
+        # Делаем 3 попытки, если нейросеть грузится
+        for i in range(3):
+            response = requests.post(API_URL, data=img_data)
+            result = response.json()
+            
+            if isinstance(result, dict) and "estimated_time" in result:
+                time.sleep(5)
+                continue
+            
+            if isinstance(result, list):
+                ai_score = next((item['score'] for item in result if item['label'].lower() in ['artificial', 'ai', 'fake']), 0)
+                return {"is_ai": ai_score > 0.5, "percentage": round(ai_score * 100, 2), "error": False}
         
-        return {
-            "is_ai": ai_score > 0.5,
-            "percentage": round(ai_score * 100, 1),
-            "error": False
-        }
-    except Exception:
-        return {"error": True, "message": "Жми кнопку еще раз!"}
+        return {"error": True, "message": "Нейросеть просыпается, нажми еще раз через 5 сек"}
+    except:
+        return {"error": True, "message": "Нажми кнопку еще раз"}
