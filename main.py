@@ -2,9 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
-import base64
 import re
-from urllib.parse import urlparse
 
 app = FastAPI()
 
@@ -15,101 +13,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ЗАМЕНИТЕ ЭТОТ ТОКЕН НА ВАШ ТОКЕН С https://huggingface.co/settings/tokens
-HUGGINGFACE_TOKEN = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
 API_URL = "https://api-inference.huggingface.co/models/umm-maybe/AI-image-detector"
-HEADERS = {"Authorization": f"Bearer {HUGGINGFACE_TOKEN}"}
+HEADERS = {"Authorization": "Bearer YOUR_HUGGINGFACE_TOKEN"}  # Замените на ваш токен
 
 @app.get("/")
 def home():
-    return {"status": "OK", "message": "AI Image Detector работает"}
+    return {"status": "OK"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
         body = await request.json()
+        raw_url = body.get("imageUrl", "")
         
-        # Получаем изображение (либо URL, либо base64)
-        image_url = body.get("imageUrl", "")
-        image_base64 = body.get("imageBase64", "")
+        if not raw_url:
+            return {"error": True, "message": "URL изображения не предоставлен"}
         
-        img_data = None
+        # --- ИСПРАВЛЕННАЯ МАГИЯ ВОССТАНОВЛЕНИЯ ССЫЛКИ ---
+        final_url = None
         
-        # Если прислали base64
-        if image_base64:
-            if "," in image_base64:
-                image_base64 = image_base64.split(",")[1]
-            img_data = base64.b64decode(image_base64)
+        # Обработка Wix ссылок
+        if "wix:image" in raw_url:
+            # Извлекаем ID изображения
+            match = re.search(r'wix:image://v1/([^/?#]+)', raw_url)
+            if match:
+                img_id = match.group(1)
+                final_url = f"https://static.wixstatic.com/media/{img_id}"
+        elif "static.wixstatic.com" in raw_url:
+            final_url = raw_url
+        elif raw_url.startswith("https://") or raw_url.startswith("http://"):
+            final_url = raw_url
+        else:
+            # Если ссылка кривая, пробуем её исправить
+            if raw_url.startswith("https:") and "//" not in raw_url:
+                final_url = raw_url.replace("https:", "https://")
+            else:
+                final_url = raw_url
         
-        # Если прислали URL
-        elif image_url:
-            # Обработка Wix ссылок
-            final_url = image_url
-            
-            if "wix:image" in image_url:
-                match = re.search(r'wix:image://v1/([^/?#]+)', image_url)
-                if match:
-                    final_url = f"https://static.wixstatic.com/media/{match.group(1)}"
-                else:
-                    match = re.search(r'wix:image://([^/?#]+)', image_url)
-                    if match:
-                        final_url = f"https://static.wixstatic.com/media/{match.group(1)}"
-            
-            # Скачиваем изображение
-            response = requests.get(final_url, timeout=15, headers={
+        # Проверяем, что ссылка валидна
+        if not final_url or len(final_url) < 10:
+            return {"error": True, "message": "Не удалось получить ссылку на изображение"}
+        
+        # Скачиваем изображение
+        try:
+            img_response = requests.get(final_url, timeout=15, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             })
-            response.raise_for_status()
-            img_data = response.content
+            img_response.raise_for_status()
+            img_data = img_response.content
+        except requests.exceptions.RequestException as e:
+            return {"error": True, "message": f"Не удалось загрузить изображение: {str(e)}"}
         
-        if not img_data:
-            return {"error": True, "message": "Не удалось получить изображение"}
-        
-        # Отправляем в Hugging Face
-        for attempt in range(3):
+        # Отправляем в Hugging Face с авторизацией
+        max_attempts = 4
+        for attempt in range(max_attempts):
             try:
-                response = requests.post(API_URL, headers=HEADERS, data=img_data, timeout=30)
+                response = requests.post(
+                    API_URL, 
+                    headers=HEADERS,  # Добавляем заголовки авторизации
+                    data=img_data,
+                    timeout=30
+                )
                 
+                # Проверяем статус ответа
                 if response.status_code == 503:
-                    time.sleep(5)
-                    continue
+                    result = response.json()
+                    if "estimated_time" in result:
+                        wait_time = min(result.get("estimated_time", 5), 10)
+                        time.sleep(wait_time)
+                        continue
                 
-                if response.status_code == 200:
+                elif response.status_code == 200:
                     result = response.json()
                     
+                    # Обрабатываем ответ
                     if isinstance(result, list) and len(result) > 0:
+                        # Ищем метку AI/real
                         ai_score = 0
                         for item in result:
                             label = item.get('label', '').lower()
                             score = item.get('score', 0)
-                            if label in ['artificial', 'ai', 'fake', 'AI']:
+                            
+                            # В зависимости от модели могут быть разные названия меток
+                            if label in ['artificial', 'ai', 'fake', 'label_1', 'AI']:
                                 ai_score = score
                                 break
-                            elif label in ['real', 'human']:
+                            elif label in ['real', 'human', 'label_0']:
                                 ai_score = 1 - score
                                 break
+                            else:
+                                # Если метки нестандартные, используем первую
+                                ai_score = score if 'artificial' in label else 1 - score
                         
-                        if ai_score == 0:
-                            ai_score = result[0].get('score', 0)
+                        is_ai = ai_score > 0.5
+                        percentage = round(ai_score * 100, 1)
                         
                         return {
-                            "is_ai": ai_score > 0.5,
-                            "percentage": round(ai_score * 100, 1),
-                            "confidence": round(ai_score, 3),
+                            "is_ai": is_ai,
+                            "percentage": percentage,
+                            "confidence": ai_score,
                             "error": False
                         }
+                    else:
+                        return {"error": True, "message": "Неожиданный формат ответа от модели"}
                 
-                return {"error": True, "message": f"Ошибка API: {response.status_code}"}
-                
-            except:
-                if attempt == 2:
-                    return {"error": True, "message": "Модель не отвечает. Попробуйте позже."}
+                else:
+                    # Другие ошибки
+                    return {
+                        "error": True, 
+                        "message": f"Ошибка API: {response.status_code}"
+                    }
+                    
+            except requests.exceptions.Timeout:
+                if attempt == max_attempts - 1:
+                    return {"error": True, "message": "Превышено время ожидания ответа от модели"}
+                continue
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    return {"error": True, "message": f"Ошибка при анализе: {str(e)}"}
                 continue
         
+        return {"error": True, "message": "Модель не отвечает. Попробуйте позже"}
+        
     except Exception as e:
-        return {"error": True, "message": f"Ошибка: {str(e)}"}
+        return {"error": True, "message": f"Ошибка сервера: {str(e)}"}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Добавляем endpoint для проверки статуса модели
+@app.get("/model-status")
+async def model_status():
+    try:
+        response = requests.get(API_URL, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return {"status": "ready", "message": "Модель готова к работе"}
+        else:
+            return {"status": "loading", "message": "Модель загружается"}
+    except:
+        return {"status": "error", "message": "Не удалось проверить статус модели"}
