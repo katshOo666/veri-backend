@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 pillow
-requests
+numpy
 onnxruntime
+requests
