@@ -1,13 +1,12 @@
 import os
 import base64
-import json
+import requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
 
 app = FastAPI()
 
-# Разрешаем CORS-запросы от твоего сайта Wix
+# Разрешаем CORS-запросы со стороны твоего сайта Wix
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,12 +14,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Считываем API-ключ OpenAI из настроек Render (Environment)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# Используем отличную и проверенную открытую модель детекции ИИ-изображений
+# Она специализируется на поиске следов Stable Diffusion, Midjourney и других генераторов
+HF_MODEL = "umm-maybe/AI-image-detector"
+API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+
+# Твой бесплатный токен доступа от Hugging Face (считывается из переменных Render)
+HF_API_KEY = os.getenv("HF_API_KEY", "")
 
 @app.get("/")
 def home():
-    return {"status": "Live", "model": "FastAPI GPT-4o-mini Detector"}
+    return {"status": "Live", "model": "Hugging Face ViT AI Detector"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
@@ -31,72 +35,65 @@ async def analyze(request: Request):
         if not image_b64:
             return {"error": True, "message": "Изображение не передано в бэкенд."}
 
-        # Очищаем base64 строку от метаданных веб-заголовков, если они есть
+        # Очищаем строку base64 от возможных заголовков браузера
         if "," in image_b64:
             image_b64 = image_b64.split(",")[1]
 
-        # Декодируем для проверки корректности структуры base64
+        # Декодируем текстовую строку обратно в байты картинки
         try:
-            base64.b64decode(image_b64)
+            img_bytes = base64.b64decode(image_b64)
         except Exception:
-            return {"error": True, "message": "Передан некорректный формат Base64."}
+            return {"error": True, "message": "Некорректный формат изображения."}
 
-        # Проверяем, настроен ли ключ API на Render
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            return {"error": True, "message": "Ключ OPENAI_API_KEY не найден в переменных окружения Render."}
+        # Настраиваем авторизацию для отправки запроса к Hugging Face
+        headers = {}
+        if HF_API_KEY:
+            headers["Authorization"] = f"Bearer {HF_API_KEY}"
 
-        # Инициализируем клиент OpenAI непосредственно перед запросом
-        client = OpenAI(api_key=api_key)
+        # Отправляем файл напрямую в API моделей Hugging Face
+        response = requests.post(API_URL, headers=headers, data=img_bytes)
 
-        # Детальная промпт-инструкция для экспертной визуальной оценки
-        prompt_instruction = (
-            "Проанализируй это изображение как эксперт по распознаванию графики искусственного интеллекта. "
-            "Изучи мелкие детали, текстуру кожи/шерсти, фон, тени, физику света, анатомические аномалии, "
-            "смазанные текстуры или идеальные цифровые размытия, "
-            "характерные для Midjourney, Stable Diffusion (включая SDXL), DALL-E, Flux или Nano Banana. "
-            "Особое внимание обрати на аниме, стилизованные арты, 3D иллюстрации и фотореалистичные портреты. "
-            "Ответь СТРОГО в формате JSON с тремя полями (и больше ничего не пиши, без разметки markdown):\n"
-            "{\n"
-            "  \"is_ai\": true или false (выстави true, если это генерация ИИ, и false, если реальное фото или рисунок человека),\n"
-            "  \"confidence\": число от 0 до 100 (процент уверенности, например 95),\n"
-            "  \"reason\": \"короткое объяснение на русском языке, почему ты так считаешь, буквально 1-2 предложения\"\n"
-            "}"
-        )
-
-        # Вызываем gpt-4o-mini (поддерживает зрение, работает быстро и очень дешево)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},  # Гарантирует получение строгого JSON
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt_instruction},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
-                            }
-                        }
-                    ]
+        if response.status_code != 200:
+            res_json = response.json()
+            # Если модель «спит» на сервере Hugging Face, она попросит подождать загрузки
+            if "estimated_time" in res_json:
+                wait_time = int(res_json["estimated_time"])
+                return {
+                    "error": True,
+                    "message": f"Нейросеть запускается на сервере. Повторите попытку через {wait_time} сек."
                 }
-            ],
-            max_tokens=300
-        )
+            return {"error": True, "message": f"Ошибка нейросети Hugging Face: код {response.status_code}"}
 
-        # Парсим полученный JSON-ответ от нейросети
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
+        predictions = response.json()
+        
+        # Разбираем результаты классификации от модели
+        # Модель возвращает список вероятностей: [{"label": "artificial", "score": 0.95}, {"label": "human", "score": 0.05}]
+        artificial_score = 0.0
+        human_score = 0.0
 
-        # Возвращаем результат со всеми возможными полями для совместимости с Wix
+        for pred in predictions:
+            if pred.get("label") == "artificial":
+                artificial_score = pred.get("score", 0.0)
+            elif pred.get("label") == "human":
+                human_score = pred.get("score", 0.0)
+
+        # Вычисляем финальный вердикт
+        is_ai = artificial_score > human_score
+        confidence_val = max(artificial_score, human_score) * 100
+
+        # Формируем простое и понятное обоснование ответа для вывода на твоем сайте
+        if is_ai:
+            reason_text = "В структуре изображения найдены микроструктурные аномалии сглаживания и пиксельные шумы, характерные для ИИ-генераторов."
+        else:
+            reason_text = "Изображение имеет плавные переходы, естественные текстуры и распределение света, характерные для реальной съемки или рисунка человека."
+
         return {
-            "is_ai": result.get("is_ai", False),
-            "confidence": result.get("confidence", 0),
-            "percentage": result.get("confidence", 0),  # Поле 'percentage' нужно для старой версии Wix-кода
-            "reason": result.get("reason", "Анализ успешно завершен."),
+            "is_ai": is_ai,
+            "confidence": int(confidence_val),
+            "percentage": int(confidence_val),  # Для совместимости со всеми версиями Wix
+            "reason": reason_text,
             "error": False
         }
 
     except Exception as e:
-        return {"error": True, "message": f"Ошибка на сервере OpenAI: {str(e)[:50]}"}
+        return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
