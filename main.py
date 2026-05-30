@@ -18,8 +18,8 @@ app.add_middleware(
 )
 
 # Ключи Sightengine (обязательно добавьте их в Environment Variables на Render)
-SIGHTENGINE_USER = os.getenv("SIGHTENGINE_USER")
-SIGHTENGINE_SECRET = os.getenv("SIGHTENGINE_SECRET")
+SIGHTENGINE_USER = os.getenv("145435152")
+SIGHTENGINE_SECRET = os.getenv("wa4ykGt9ezK2MUZuTCURcfL2wDjYXpi8")
 SIGHTENGINE_API_URL = "https://api.sightengine.com/1.0/check.json"
 
 @app.get("/")
