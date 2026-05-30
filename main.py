@@ -97,7 +97,11 @@ async def analyze(request: Request):
 
     except Exception as e:
         return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
-        }
 
+# Специальный блок автозапуска для Render (если там настроена команда python main.py)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
     except Exception as e:
         return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
