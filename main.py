@@ -1,37 +1,53 @@
 import os
 import base64
 import json
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
-app = Flask(__name__)
-CORS(app)  # Разрешаем запросы со стороны Wix
+app = FastAPI()
 
-# 1. Настраиваем API-ключ OpenAI
-# Рекомендуется добавить переменную OPENAI_API_KEY в настройках Render (Environment Variables)
-# Или для теста временно вставьте свой ключ прямо в код ниже
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# Разрешаем CORS-запросы от твоего сайта Wix
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Инициализируем клиент OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Считываем API-ключ OpenAI из настроек Render (Environment)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-@app.route('/')
+@app.get("/")
 def home():
-    return "Python OpenAI GPT-4o-mini Detector is Running!"
+    return {"status": "Live", "model": "FastAPI GPT-4o-mini Detector"}
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
+@app.post("/analyze")
+async def analyze(request: Request):
     try:
-        data = request.get_json()
-        if not data or 'image' not in data:
-            return jsonify({"error": True, "message": "Нет данных изображения в запросе"}), 400
+        body = await request.json()
+        image_b64 = body.get("image", "")
 
-        base64_image = data['image']
-        
+        if not image_b64:
+            return {"error": True, "message": "Изображение не передано в бэкенд."}
+
         # Очищаем base64 строку от метаданных веб-заголовков, если они есть
-        if "," in base64_image:
-            base64_image = base64_image.split(",")[1]
+        if "," in image_b64:
+            image_b64 = image_b64.split(",")[1]
+
+        # Декодируем для проверки корректности структуры base64
+        try:
+            base64.b64decode(image_b64)
+        except Exception:
+            return {"error": True, "message": "Передан некорректный формат Base64."}
+
+        # Проверяем, настроен ли ключ API на Render
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            return {"error": True, "message": "Ключ OPENAI_API_KEY не найден в переменных окружения Render."}
+
+        # Инициализируем клиент OpenAI непосредственно перед запросом
+        client = OpenAI(api_key=api_key)
 
         # Детальная промпт-инструкция для экспертной визуальной оценки
         prompt_instruction = (
@@ -48,10 +64,10 @@ def analyze():
             "}"
         )
 
-        # 2. Вызываем GPT-4o-mini (самая быстрая и дешевая модель с поддержкой зрения)
+        # Вызываем gpt-4o-mini (поддерживает зрение, работает быстро и очень дешево)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},  # Гарантирует получение строгого JSON без лишнего текста
+            response_format={"type": "json_object"},  # Гарантирует получение строгого JSON
             messages=[
                 {
                     "role": "user",
@@ -60,7 +76,7 @@ def analyze():
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
+                                "url": f"data:image/jpeg;base64,{image_b64}"
                             }
                         }
                     ]
@@ -73,16 +89,14 @@ def analyze():
         result_text = response.choices[0].message.content
         result = json.loads(result_text)
 
-        # Возвращаем результат в формате, который ожидает твой код на Wix
-        return jsonify({
+        # Возвращаем результат со всеми возможными полями для совместимости с Wix
+        return {
             "is_ai": result.get("is_ai", False),
             "confidence": result.get("confidence", 0),
-            "reason": result.get("reason", "Анализ завершен успешно."),
+            "percentage": result.get("confidence", 0),  # Поле 'percentage' нужно для старой версии Wix-кода
+            "reason": result.get("reason", "Анализ успешно завершен."),
             "error": False
-        })
+        }
 
     except Exception as e:
-        return jsonify({"error": True, "message": f"Ошибка на сервере OpenAI: {str(e)[:50]}"}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+        return {"error": True, "message": f"Ошибка на сервере OpenAI: {str(e)[:50]}"}
