@@ -101,7 +101,7 @@ async def analyze(request: Request):
 # Специальный блок автозапуска для Render (если там настроена команда python main.py)
 if __name__ == "__main__":
     import uvicorn
+    # Выводим сообщение в консоль Render при старте
+    print("Запуск приложения FastAPI...")
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
-    except Exception as e:
-        return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
