@@ -1,58 +1,88 @@
-import base64
 import os
-import requests
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+import base64
+import json
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from openai import OpenAI
 
-app = FastAPI()
+app = Flask(__name__)
+CORS(app)  # Разрешаем запросы со стороны Wix
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 1. Настраиваем API-ключ OpenAI
+# Рекомендуется добавить переменную OPENAI_API_KEY в настройках Render (Environment Variables)
+# Или для теста временно вставьте свой ключ прямо в код ниже
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-SIGHTENGINE_USER = "145435152"
-SIGHTENGINE_SECRET = "wa4ykGt9ezK2MUZuTCURcfL2wDjYXpi8"
-API_URL = "https://api.sightengine.com/1.0/check.json"
+# Инициализируем клиент OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-@app.get("/")
+@app.route('/')
 def home():
-    return {"status": "Live"}
+    return "Python OpenAI GPT-4o-mini Detector is Running!"
 
-@app.post("/analyze")
-async def analyze(request: Request):
+@app.route('/analyze', methods=['POST'])
+def analyze():
     try:
-        body = await request.json()
-        image_b64 = body.get("image", "")
+        data = request.get_json()
+        if not data or 'image' not in data:
+            return jsonify({"error": True, "message": "Нет данных изображения в запросе"}), 400
 
-        if not image_b64:
-            return {"error": True, "message": "Данные картинки не получены сервером"}
-
-        # Раскодируем идеальную Base64 строчку обратно в байты
-        img_bytes = base64.b64decode(image_b64)
-
-        params = {
-            'models': 'genai',
-            'api_user': SIGHTENGINE_USER,
-            'api_secret': SIGHTENGINE_SECRET
-        }
+        base64_image = data['image']
         
-        # Отправляем как полноценный чистый файл
-        files = {'media': ('image.jpg', img_bytes, 'image/jpeg')}
-        response = requests.post(API_URL, params=params, files=files)
-        data = response.json()
+        # Очищаем base64 строку от метаданных веб-заголовков, если они есть
+        if "," in base64_image:
+            base64_image = base64_image.split(",")[1]
 
-        if data.get('status') == 'failure':
-            return {"error": True, "message": data.get('error', {}).get('message')}
+        # Детальная промпт-инструкция для экспертной визуальной оценки
+        prompt_instruction = (
+            "Проанализируй это изображение как эксперт по распознаванию графики искусственного интеллекта. "
+            "Изучи мелкие детали, текстуру кожи/шерсти, фон, тени, физику света, анатомические аномалии, "
+            "смазанные текстуры или идеальные цифровые размытия, "
+            "характерные для Midjourney, Stable Diffusion (включая SDXL), DALL-E, Flux или Nano Banana. "
+            "Особое внимание обрати на аниме, стилизованные арты, 3D иллюстрации и фотореалистичные портреты. "
+            "Ответь СТРОГО в формате JSON с тремя полями (и больше ничего не пиши, без разметки markdown):\n"
+            "{\n"
+            "  \"is_ai\": true или false (выстави true, если это генерация ИИ, и false, если реальное фото или рисунок человека),\n"
+            "  \"confidence\": число от 0 до 100 (процент уверенности, например 95),\n"
+            "  \"reason\": \"короткое объяснение на русском языке, почему ты так считаешь, буквально 1-2 предложения\"\n"
+            "}"
+        )
 
-        ai_prob = data.get('genai', {}).get('prob', 0)
-        
-        return {
-            "is_ai": ai_prob > 0.5,
-            "percentage": round(ai_prob * 100, 1),
+        # 2. Вызываем GPT-4o-mini (самая быстрая и дешевая модель с поддержкой зрения)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},  # Гарантирует получение строгого JSON без лишнего текста
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_instruction},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=300
+        )
+
+        # Парсим полученный JSON-ответ от нейросети
+        result_text = response.choices[0].message.content
+        result = json.loads(result_text)
+
+        # Возвращаем результат в формате, который ожидает твой код на Wix
+        return jsonify({
+            "is_ai": result.get("is_ai", False),
+            "confidence": result.get("confidence", 0),
+            "reason": result.get("reason", "Анализ завершен успешно."),
             "error": False
-        }
+        })
+
     except Exception as e:
-        return {"error": True, "message": f"Ошибка сервера: {str(e)[:30]}"}
+        return jsonify({"error": True, "message": f"Ошибка на сервере OpenAI: {str(e)[:50]}"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
