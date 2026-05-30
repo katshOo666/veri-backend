@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Разрешаем CORS-запросы со стороны твоего сайта Wix
+# Настройка CORS для безопасной связи с твоим сайтом Wix
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,8 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Используем отличную и проверенную открытую модель детекции ИИ-изображений
-# Она специализируется на поиске следов Stable Diffusion, Midjourney и других генераторов
+# Используем открытую модель детекции ИИ-изображений от Hugging Face
 HF_MODEL = "umm-maybe/AI-image-detector"
 API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
@@ -35,11 +34,11 @@ async def analyze(request: Request):
         if not image_b64:
             return {"error": True, "message": "Изображение не передано в бэкенд."}
 
-        # Очищаем строку base64 от возможных заголовков браузера
+        # Очищаем строку base64 от возможных веб-заголовков браузера
         if "," in image_b64:
             image_b64 = image_b64.split(",")[1]
 
-        # Декодируем текстовую строку обратно в байты картинки
+        # Декодируем текстовую строку обратно в байты картинки для отправки
         try:
             img_bytes = base64.b64decode(image_b64)
         except Exception:
@@ -50,13 +49,13 @@ async def analyze(request: Request):
         if HF_API_KEY:
             headers["Authorization"] = f"Bearer {HF_API_KEY}"
 
-        # Отправляем файл напрямую в API моделей Hugging Face
+        # Отправляем бинарный файл напрямую в API моделей Hugging Face
         response = requests.post(API_URL, headers=headers, data=img_bytes)
 
         if response.status_code != 200:
             res_json = response.json()
             # Если модель «спит» на сервере Hugging Face, она попросит подождать загрузки
-            if "estimated_time" in res_json:
+            if isinstance(res_json, dict) and "estimated_time" in res_json:
                 wait_time = int(res_json["estimated_time"])
                 return {
                     "error": True,
@@ -71,17 +70,18 @@ async def analyze(request: Request):
         artificial_score = 0.0
         human_score = 0.0
 
-        for pred in predictions:
-            if pred.get("label") == "artificial":
-                artificial_score = pred.get("score", 0.0)
-            elif pred.get("label") == "human":
-                human_score = pred.get("score", 0.0)
+        if isinstance(predictions, list):
+            for pred in predictions:
+                if pred.get("label") == "artificial":
+                    artificial_score = pred.get("score", 0.0)
+                elif pred.get("label") == "human":
+                    human_score = pred.get("score", 0.0)
 
         # Вычисляем финальный вердикт
         is_ai = artificial_score > human_score
         confidence_val = max(artificial_score, human_score) * 100
 
-        # Формируем простое и понятное обоснование ответа для вывода на твоем сайте
+        # Формируем понятное обоснование ответа для вывода на твоем сайте
         if is_ai:
             reason_text = "В структуре изображения найдены микроструктурные аномалии сглаживания и пиксельные шумы, характерные для ИИ-генераторов."
         else:
@@ -93,6 +93,10 @@ async def analyze(request: Request):
             "percentage": int(confidence_val),  # Для совместимости со всеми версиями Wix
             "reason": reason_text,
             "error": False
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
         }
 
     except Exception as e:
