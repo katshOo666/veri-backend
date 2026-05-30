@@ -1,12 +1,16 @@
 import os
 import base64
-import requests
+import io
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+
+# Импортируем библиотеки для локального запуска нейросети
+from transformers import pipeline
 
 app = FastAPI()
 
-# Настройка CORS для безопасной связи с твоим сайтом Wix
+# Разрешаем CORS-запросы со стороны твоего сайта Wix
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,59 +18,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Используем открытую модель детекции ИИ-изображений от Hugging Face
-HF_MODEL = "umm-maybe/AI-image-detector"
-API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-
-# Твой бесплатный токен доступа от Hugging Face (считывается из переменных Render)
-HF_API_KEY = os.getenv("HF_API_KEY", "")
+print("Загрузка локальной нейросети детектора ИИ...")
+# Загружаем модель прямо в память сервера при старте (абсолютно бесплатно и без API ключей!)
+try:
+    pipe = pipeline("image-classification", model="umm-maybe/AI-image-detector")
+    print("Нейросеть успешно загружена в память сервера!")
+except Exception as e:
+    print(f"Ошибка при предварительной загрузке модели: {e}")
+    pipe = None
 
 @app.get("/")
 def home():
-    return {"status": "Live", "model": "Hugging Face ViT AI Detector"}
+    status = "Live" if pipe is not None else "Loading/Error"
+    return {"status": status, "model": "Local Hugging Face ViT AI Detector (Self-Hosted)"}
 
 @app.post("/analyze")
 async def analyze(request: Request):
     try:
+        global pipe
+        # Если модель не успела загрузиться при старте, пробуем загрузить её снова
+        if pipe is None:
+            pipe = pipeline("image-classification", model="umm-maybe/AI-image-detector")
+
         body = await request.json()
         image_b64 = body.get("image", "")
 
         if not image_b64:
             return {"error": True, "message": "Изображение не передано в бэкенд."}
 
-        # Очищаем строку base64 от возможных веб-заголовков браузера
+        # Очищаем строку base64 от возможных заголовков браузера
         if "," in image_b64:
             image_b64 = image_b64.split(",")[1]
 
-        # Декодируем текстовую строку обратно в байты картинки для отправки
+        # Декодируем текстовую строку в байты картинки
         try:
             img_bytes = base64.b64decode(image_b64)
         except Exception:
             return {"error": True, "message": "Некорректный формат изображения."}
 
-        # Настраиваем авторизацию для отправки запроса к Hugging Face
-        headers = {}
-        if HF_API_KEY:
-            headers["Authorization"] = f"Bearer {HF_API_KEY}"
+        # Открываем изображение через PIL прямо в памяти сервера
+        try:
+            image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        except Exception as e:
+            return {"error": True, "message": f"Не удалось прочитать картинку: {str(e)[:30]}"}
 
-        # Отправляем бинарный файл напрямую в API моделей Hugging Face
-        response = requests.post(API_URL, headers=headers, data=img_bytes)
-
-        if response.status_code != 200:
-            res_json = response.json()
-            # Если модель «спит» на сервере Hugging Face, она попросит подождать загрузки
-            if isinstance(res_json, dict) and "estimated_time" in res_json:
-                wait_time = int(res_json["estimated_time"])
-                return {
-                    "error": True,
-                    "message": f"Нейросеть запускается на сервере. Повторите попытку через {wait_time} сек."
-                }
-            return {"error": True, "message": f"Ошибка нейросети Hugging Face: код {response.status_code}"}
-
-        predictions = response.json()
+        # Локально классифицируем изображение нашей моделью!
+        predictions = pipe(image)
         
-        # Разбираем результаты классификации от модели
-        # Модель возвращает список вероятностей: [{"label": "artificial", "score": 0.95}, {"label": "human", "score": 0.05}]
+        # Разбираем результаты классификации
         artificial_score = 0.0
         human_score = 0.0
 
@@ -98,10 +97,9 @@ async def analyze(request: Request):
     except Exception as e:
         return {"error": True, "message": f"Ошибка на сервере: {str(e)[:50]}"}
 
-# Специальный блок автозапуска для Render (если там настроена команда python main.py)
+# Специальный блок автозапуска для Render
 if __name__ == "__main__":
     import uvicorn
-    # Выводим сообщение в консоль Render при старте
     print("Запуск приложения FastAPI...")
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
