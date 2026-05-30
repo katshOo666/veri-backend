@@ -1,5 +1,6 @@
 import os
 import base64
+import time
 import requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,13 +15,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Используем стабильное бесплатное API для распознавания ИИ-изображений (модель ViT от Hugging Face)
-# Работает напрямую через общедоступный шлюз без необходимости ввода сложных токенов!
-API_URL = "https://umm-maybe-ai-image-detector.hf.space/run/predict"
+# Используем официальный, стабильный шлюз Hugging Face Inference API
+HF_MODEL = "umm-maybe/AI-image-detector"
+API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+
+# Твой токен доступа от Hugging Face (считывается из переменных Render)
+# Убедись, что переменная HF_API_KEY добавлена в панели Render (Environment)!
+HF_API_KEY = os.getenv("HF_API_KEY", "")
 
 @app.get("/")
 def home():
-    return {"status": "Live", "model": "Hugging Face ViT AI Detector (High Accuracy)"}
+    has_key = "Да" if HF_API_KEY else "Нет (запросы могут работать нестабильно)"
+    return {
+        "status": "Live", 
+        "model": "Hugging Face ViT AI Detector (Official API Gateway)",
+        "api_key_configured": has_key
+    }
 
 @app.post("/analyze")
 async def analyze(request: Request):
@@ -35,45 +45,81 @@ async def analyze(request: Request):
         if "," in image_b64:
             image_b64 = image_b64.split(",")[1]
 
-        # Добавляем стандартный заголовок data:image для корректной передачи в API
-        full_base64 = f"data:image/jpeg;base64,{image_b64}"
+        # Декодируем текстовую строку обратно в байты картинки
+        try:
+            img_bytes = base64.b64decode(image_b64)
+        except Exception:
+            return {"error": True, "message": "Некорректный формат изображения."}
 
-        # Формируем запрос в формате Hugging Face Spaces Gradio API
-        payload = {
-            "data": [full_base64]
+        # Настраиваем заголовки авторизации к Hugging Face
+        headers = {
+            "User-Agent": "Mozilla/5.0"
         }
+        if HF_API_KEY:
+            headers["Authorization"] = f"Bearer {HF_API_KEY}"
 
-        # Отправляем запрос на мощный сервер распознавания
-        response = requests.post(API_URL, json=payload, timeout=20)
+        # Отправляем запрос напрямую в официальный API-шлюз
+        response = None
+        last_error = ""
+        
+        # Пробуем сделать запрос. Если сервер Hugging Face перегружен, сделаем до 3 быстрых попыток
+        for attempt in range(3):
+            try:
+                response = requests.post(API_URL, headers=headers, data=img_bytes, timeout=15)
+                if response.status_code in [200, 503, 429]: # Важные системные ответы обрабатываем ниже
+                    break
+            except requests.exceptions.RequestException as e:
+                last_error = str(e)
+                if attempt < 2:
+                    time.sleep(1)
+                continue
+
+        if response is None:
+            return {
+                "error": True,
+                "message": f"Сбой связи с сервером ИИ. Попробуйте еще раз. ({last_error[:20]})"
+            }
+
+        # Обработка состояния, когда модель спит (Hugging Face прогревает её)
+        if response.status_code == 503 or response.status_code == 202:
+            try:
+                res_json = response.json()
+                if isinstance(res_json, dict) and "estimated_time" in res_json:
+                    wait_time = int(res_json["estimated_time"])
+                    return {
+                        "error": True,
+                        "message": f"Модель ИИ запускается на сервере. Пожалуйста, повторите попытку через {wait_time} сек."
+                    }
+            except Exception:
+                pass
+            return {
+                "error": True,
+                "message": "Модель ИИ просыпается. Пожалуйста, подождите 15-20 секунд и нажмите кнопку снова."
+            }
 
         if response.status_code != 200:
-            return {"error": True, "message": f"Ошибка анализатора: код {response.status_code}"}
+            return {
+                "error": True, 
+                "message": f"Ошибка удаленного сервера ИИ (Код: {response.status_code}). Попробуйте позже."
+            }
 
-        res_data = response.json()
+        predictions = response.json()
         
-        # Получаем данные предсказания
-        # Формат ответа Gradio: {"data": [{"label": "artificial", "confidences": [{"label": "artificial", "confidence": 0.99}]}]}
-        try:
-            prediction_data = res_data["data"][0]
-            label = prediction_data.get("label", "human") # 'artificial' или 'human'
-            
-            confidences = prediction_data.get("confidences", [])
-            confidence_val = 0.0
-            
-            for conf in confidences:
-                if conf.get("label") == label:
-                    confidence_val = conf.get("confidence", 0.0) * 100
-                    break
-            
-            is_ai = (label == "artificial")
-            
-        except Exception:
-            # Резервный разбор на случай изменения формата API
-            is_ai = "artificial" in str(res_data)
-            confidence_val = 92.0
+        # Разбираем результаты классификации от модели
+        # Модель возвращает массив: [{"label": "artificial", "score": 0.99}, {"label": "human", "score": 0.01}]
+        artificial_score = 0.0
+        human_score = 0.0
 
-        # Корректируем уверенность для вывода красивого целого числа
-        confidence_val = int(confidence_val) if confidence_val > 0 else 90
+        if isinstance(predictions, list):
+            for pred in predictions:
+                if pred.get("label") == "artificial":
+                    artificial_score = pred.get("score", 0.0)
+                elif pred.get("label") == "human":
+                    human_score = pred.get("score", 0.0)
+
+        # Вычисляем финальный вердикт
+        is_ai = artificial_score > human_score
+        confidence_val = max(artificial_score, human_score) * 100
 
         # Формируем профессиональное обоснование ответа для твоей комиссии
         if is_ai:
@@ -83,14 +129,14 @@ async def analyze(request: Request):
 
         return {
             "is_ai": is_ai,
-            "confidence": confidence_val,
-            "percentage": confidence_val, # Для совместимости с Wix
+            "confidence": int(confidence_val),
+            "percentage": int(confidence_val),  # Для совместимости с Wix
             "reason": reason_text,
             "error": False
         }
 
     except Exception as e:
-        return {"error": True, "message": f"Ошибка сервера: {str(e)[:50]}"}
+        return {"error": True, "message": f"Внутренняя ошибка бэкенда: {str(e)[:50]}"}
 
 # Блок автозапуска для Render
 if __name__ == "__main__":
